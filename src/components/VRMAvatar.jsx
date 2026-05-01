@@ -2,7 +2,7 @@ import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 import { useAnimations, useFBX, useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
-import { lerp } from "three/src/math/MathUtils.js";
+import { MathUtils, lerp } from "three/src/math/MathUtils.js";
 import { useAvatarControlStore } from "../hooks/useAvatarControlStore";
 import { remapMixamoAnimationToVrm } from "../utils/remapMixamoAnimationToVrm";
 
@@ -51,6 +51,10 @@ export const VRMAvatar = ({ avatar, ...props }) => {
   const targetExpressions = useAvatarControlStore(
     (state) => state.targetExpressions
   );
+  const targetBoneRotations = useAvatarControlStore(
+    (state) => state.targetBoneRotations
+  );
+  const hasRemoteBonePose = Object.keys(targetBoneRotations).length > 0;
 
   const activeAction = useRef(null);
 
@@ -81,18 +85,60 @@ export const VRMAvatar = ({ avatar, ...props }) => {
     activeAction.current = nextAction;
   }, [actions, targetAnimation]);
 
+  useEffect(() => {
+    if (!hasRemoteBonePose || !activeAction.current) return;
+
+    // Full-body Mixamo clips write to the same humanoid bones every frame.
+    // Remote granular pose control must win, so stop the active clip while a
+    // bone pose target exists. A later triggerAnimation() clears bone targets
+    // and starts the requested clip again.
+    activeAction.current.stop();
+    activeAction.current = null;
+  }, [hasRemoteBonePose]);
+
   useFrame((_, delta) => {
-    if (!userData.vrm?.expressionManager) return;
+    const vrm = userData.vrm;
+    if (!vrm) return;
 
-    Object.entries(targetExpressions).forEach(([name, value]) => {
-      const currentValue = userData.vrm.expressionManager.getValue(name) ?? 0;
-      userData.vrm.expressionManager.setValue(
-        name,
-        lerp(currentValue, value, delta * INTERPOLATION_SPEED)
-      );
-    });
+    // Expressions
+    if (vrm.expressionManager) {
+      Object.entries(targetExpressions).forEach(([name, value]) => {
+        const currentValue = vrm.expressionManager.getValue(name) ?? 0;
+        vrm.expressionManager.setValue(
+          name,
+          lerp(currentValue, value, delta * INTERPOLATION_SPEED)
+        );
+      });
+    }
 
-    userData.vrm.update(delta);
+    // Bone rotations — targetBoneRotations is { [boneName]: { x?, y?, z? } } in degrees.
+    // IMPORTANT: VRMHumanoid.update() transfers normalized bones to raw bones when
+    // autoUpdateHumanBones is enabled, so remote pose control must target the
+    // normalized bone first. If we rotate raw bones here, vrm.update(delta) can
+    // immediately overwrite the pose and the gesture will not be visible.
+    if (hasRemoteBonePose) {
+      const humanoid = vrm.humanoid;
+      Object.entries(targetBoneRotations).forEach(([boneName, axes]) => {
+        // Prefer normalized bones because vrm.update() copies them to raw bones.
+        let boneNode = humanoid.getNormalizedBoneNode?.(boneName);
+        if (!boneNode) {
+          boneNode = humanoid.getRawBoneNode?.(boneName);
+        }
+        if (!boneNode) return;
+
+        const targetRad = {
+          x: MathUtils.degToRad(axes.x ?? 0),
+          y: MathUtils.degToRad(axes.y ?? 0),
+          z: MathUtils.degToRad(axes.z ?? 0),
+        };
+
+        boneNode.rotation.x = lerp(boneNode.rotation.x, targetRad.x, delta * INTERPOLATION_SPEED);
+        boneNode.rotation.y = lerp(boneNode.rotation.y, targetRad.y, delta * INTERPOLATION_SPEED);
+        boneNode.rotation.z = lerp(boneNode.rotation.z, targetRad.z, delta * INTERPOLATION_SPEED);
+      });
+    }
+
+    vrm.update(delta);
   });
 
   return (

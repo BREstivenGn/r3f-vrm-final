@@ -32,8 +32,33 @@
 - `avatar.animation.trigger` → `{ name }`
 - `avatar.lipsync.visemes` → `{ visemes: [{ name, value }] }`
 - `avatar.speech.request` → `{ text, voice }`
+- `avatar.bone.rotate` → `{ bone, axis, angle }` — angle en grados
+- `avatar.bone.pose` → `{ pose: { [bone]: { x?, y?, z? } } }` — ángulos en grados
 
 Todos incluyen `ts` para trazabilidad de latencia.
+
+## Ejemplo: "Levanta el brazo derecho y gira la cabeza hacia la izquierda"
+
+Llamada MCP:
+```
+set_body_pose({
+  pose: {
+    rightUpperArm: { x: -45 },
+    head: { y: 30 }
+  }
+})
+```
+
+Esto envía por WebSocket:
+```json
+{ "type": "avatar.bone.pose", "pose": { "rightUpperArm": { "x": -45 }, "head": { "y": 30 } }, "ts": 1234567890 }
+```
+
+El frontend recibe el mensaje, actualiza `targetBoneRotations` en el store con grados, y `VRMAvatar.useFrame` convierte a radianes con `MathUtils.degToRad` antes de interpolar la rotación del hueso correspondiente.
+
+Para gestos rápidos, el modelo debe usar `play_pose_sequence(frames)` en lugar de hacer muchas llamadas `rotate_body_part`. El servidor no trae gestos quemados: sólo reproduce los frames que el modelo genera, con `holdMs` por frame, y envía mensajes `avatar.bone.rotate`/`avatar.bone.pose` al broker local sin volver a consultar al LLM.
+
+Nota importante: el frontend no reproduce `Idle` automáticamente al cargar. Las animaciones Mixamo siguen cargadas, pero sólo se activan con `trigger_animation(...)`. Cuando existe una pose granular (`targetBoneRotations` no vacío), el frontend detiene la animación Mixamo activa. Si no se hace esto, clips como `Idle` escriben sobre los mismos huesos cada frame y pisan el gesto remoto. Un `trigger_animation(...)` posterior limpia la pose manual y vuelve a reproducir la animación solicitada.
 
 ## Limpieza aplicada al frontend (qué conservar / qué sacar)
 
